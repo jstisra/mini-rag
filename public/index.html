@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Mini RAG (Local)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 32px auto; padding: 0 12px; }
+    textarea, input { width: 100%; padding: 8px; box-sizing: border-box; }
+    button { padding: 8px 12px; margin-top: 8px; }
+    .row { display: grid; gap: 8px; margin-bottom: 20px; }
+    pre { background: #f6f6f6; padding: 12px; overflow:auto; }
+    .chunks { white-space: pre-wrap; border: 1px solid #ddd; padding: 12px; border-radius: 6px; }
+    .muted { color: #666; font-size: 0.9em;}
+  </style>
+</head>
+<body>
+  <h1>Mini RAG (Local Embeddings)</h1>
+
+  <section>
+    <h2>1) Ingest text</h2>
+    <div class="row">
+      <textarea id="ingestText" rows="6" placeholder="Paste any text here..."></textarea>
+      <button id="ingestBtn">Ingest</button>
+      <div id="ingestOut" class="muted"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>2) Ask</h2>
+    <div class="row">
+      <input id="q" placeholder="Ask a question..." />
+      <button id="askBtn">Ask</button>
+      <div class="row">
+        <h3>Top chunks</h3>
+        <div id="chunks" class="chunks"></div>
+      </div>
+      <div class="row">
+        <h3>Answer (uses API if available)</h3>
+        <pre id="answer"></pre>
+        <div class="muted">If empty, your API quota is out — retrieval still works above.</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3) Utilities</h2>
+    <button id="clearBtn">Clear memory</button>
+    <div id="clearOut" class="muted"></div>
+  </section>
+
+  <script>
+    async function postJSON(url, body) {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    }
+    async function getJSON(url) {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    }
+
+    document.getElementById('ingestBtn').onclick = async () => {
+      const text = document.getElementById('ingestText').value.trim();
+      const out = document.getElementById('ingestOut');
+      out.textContent = 'Ingesting...';
+      try {
+        const res = await postJSON('/ingest', { text });
+        out.textContent = JSON.stringify(res);
+      } catch (e) {
+        out.textContent = e.message;
+      }
+    };
+
+    document.getElementById('askBtn').onclick = async () => {
+      const q = encodeURIComponent(document.getElementById('q').value.trim());
+      const chunksEl = document.getElementById('chunks');
+      const ansEl = document.getElementById('answer');
+      chunksEl.textContent = 'Searching...'; ansEl.textContent = '';
+      try {
+        const res = await getJSON(`/ask?q=${q}&k=4`);
+        chunksEl.textContent = res.chunks.map(c => `${c.ref} (score ${c.score}):\n${c.text}`).join('\n\n');
+        ansEl.textContent = res.answer || '';
+      } catch (e) {
+        chunksEl.textContent = e.message;
+      }
+    };
+
+    document.getElementById('clearBtn').onclick = async () => {
+      const r = await fetch('/clear', { method: 'POST' });
+      document.getElementById('clearOut').textContent = r.ok ? 'Cleared!' : 'Failed to clear.';
+    };
+  </script>
+</body>
+</html>
