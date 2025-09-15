@@ -7,7 +7,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+
 
 // paths + data file (single source of truth)
 const __filename = fileURLToPath(import.meta.url);
@@ -96,6 +97,22 @@ async function loadMemoryIfExists() {
   } catch { /* first run: file not found is fine */ }
 }
 
+//upload helper
+async function extractPdfTextFromBuffer(buffer) {
+  const loadingTask = getDocument({ data: buffer });
+  const pdf = await loadingTask.promise;
+  let fullText = '';
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const strings = content.items.map(it => ('str' in it ? it.str : '')).filter(Boolean);
+    fullText += strings.join(' ') + '\n\n';
+  }
+  await pdf.destroy();
+  return fullText.trim();
+}
+
+
 
 // ---------- sanity route ----------
 app.get('/', (_req, res) => {
@@ -106,9 +123,11 @@ app.get('/', (_req, res) => {
 app.post('/ingest', async (req, res) => {
   try {
     const text = (req.body?.text || '').trim();
+    console.log('INGEST hit; text length =', text.length);
     if (!text) return res.status(400).json({ error: 'Missing "text" in body' });
 
     const chunks = chunkText(text, 800, 120);
+    console.log('INGEST chunks =', chunks.length);
     if (chunks.length === 0) return res.status(400).json({ error: 'No usable text' });
 
     // embed + store
@@ -236,6 +255,61 @@ app.post('/clear', async (_req, res) => {
 
 /*load on startup*/
 await loadMemoryIfExists();
+
+
+/*route to list stored chunks */
+app.get('/list', (_req, res) => {
+  res.json({
+    total: MEMORY.length,
+    items: MEMORY.map(({ id, text }, idx) => ({
+      id,
+      idx,
+      preview: text.length > 200 ? text.slice(0, 200) + '…' : text,
+    })),
+  });
+});
+
+
+
+
+
+/**export memory */
+app.get('/export', (_req, res) => {
+  const payload = { nextId: NEXT_ID, items: MEMORY };
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', 'attachment; filename="memory.json"');
+  res.send(JSON.stringify(payload, null, 2));
+});
+
+// IMPORT: POST /import
+app.post('/import', async (req, res) => {
+  try {
+    const { nextId, items } = req.body;
+    if (!Array.isArray(items)) {
+      return res.status(400).json({ error: 'Invalid file format' });
+    }
+    MEMORY.length = 0;
+    for (const it of items) MEMORY.push(it);
+    NEXT_ID = nextId || (MEMORY.at(-1)?.id ?? 0) + 1;
+    await saveMemory();
+    res.json({ ok: true, total: MEMORY.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+//-----Debug routes----
+
+// quick health checks
+app.get('/ping', (_req, res) => res.json({ ok: true, t: Date.now() }));
+
+// log every request (method + url)
+app.use((req, _res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
+app.get('/ping', (_req, res) => res.json({ ok: true, t: Date.now() }));
 
 
 app.listen(3000, () => {

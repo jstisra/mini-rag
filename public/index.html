@@ -5,19 +5,105 @@
   <title>Mini RAG (Local)</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 32px auto; padding: 0 12px; }
-    textarea, input { width: 100%; padding: 8px; box-sizing: border-box; }
-    button { padding: 8px 12px; margin-top: 8px; }
-    .row { display: grid; gap: 8px; margin-bottom: 20px; }
-    pre { background: #f6f6f6; padding: 12px; overflow:auto; }
-    .chunks { white-space: pre-wrap; border: 1px solid #ddd; padding: 12px; border-radius: 6px; }
-    .muted { color: #666; font-size: 0.9em;}
-  </style>
+  :root {
+    /* still dark, but brighter + higher contrast */
+    --bg: #0e141b;        /* was #0b0f14 */
+    --card: #151e28;      /* was #121820 */
+    --text: #f2f6fb;      /* was #e7edf3 */
+    --muted: #b7c4d1;     /* was #9fb0bf */
+    --border: #2a394a;    /* was #1f2a36 */
+    --accent: #3aa0ff;
+    --field: #121a24;     /* inputs/pre background */
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    max-width: 980px;
+    margin: 32px auto;
+    padding: 0 16px 48px;
+    line-height: 1.6;                 /* easier reading */
+  }
+
+  h1 { font-size: 28px; margin: 0 0 16px; letter-spacing: .2px; font-weight: 700; }
+  h2 {
+    font-size: 18px;
+    margin: 0 0 10px;
+    color: var(--text);        /* use full text color */
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    }
+
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px;
+    margin: 18px 0;
+    box-shadow: 0 10px 24px rgba(0,0,0,0.28); /* slightly stronger but soft */
+  }
+
+  .row { display: grid; gap: 12px; }
+
+  textarea, input {
+    width: 100%;
+    background: var(--field);         /* brighter than before */
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    outline: none;
+    font-size: 15px;                  /* bigger text */
+  }
+  textarea::placeholder, input::placeholder { color: #7f95a8; }
+  textarea:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(58,160,255,.15); }
+
+  button {
+    border: 1px solid var(--border);
+    background: linear-gradient(180deg, #1a2330, #131b25);
+    color: var(--text);
+    padding: 11px 14px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-weight: 700;
+  }
+  button:hover { border-color: var(--accent); transform: translateY(-0.5px); }
+
+  .chunks, pre {
+    background: var(--field);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    line-height: 1.55;                /* more legible blocks */
+    white-space: pre-wrap;            /* wrap long lines */
+  }
+
+  .muted { color: var(--muted); font-size: 0.92em; }
+  .stack { display: grid; gap: 6px; }
+
+  footer {
+    margin-top: 20px;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+  }
+
+  .row button,
+.row input[type="file"] {
+  margin-right: 8px;
+}
+
+</style>
+
+
 </head>
 <body>
   <h1>Mini RAG (Local Embeddings)</h1>
 
-  <section>
+  <section class="card">
     <h2>1) Ingest text</h2>
     <div class="row">
       <textarea id="ingestText" rows="6" placeholder="Paste any text here..."></textarea>
@@ -26,7 +112,7 @@
     </div>
   </section>
 
-  <section>
+  <section class="card">
     <h2>2) Ask</h2>
     <div class="row">
       <input id="q" placeholder="Ask a question..." />
@@ -43,13 +129,31 @@
     </div>
   </section>
 
-  <section>
-    <h2>3) Utilities</h2>
+  <section class="card">
+  <h2>3) Stored chunks</h2>
+  <button id="listBtn">List chunks</button>
+  <div id="listOut" class="chunks" style="margin-top:8px;"></div>
+</section>
+
+  <section class="card">
+  <h2>3) Utilities</h2>
+  <div class="row">
     <button id="clearBtn">Clear memory</button>
-    <div id="clearOut" class="muted"></div>
-  </section>
+    <button id="exportBtn">Export memory (.json)</button>
+  </div>
+  <div class="row" style="margin-top: 12px;">
+    <input type="file" id="uploadFile" accept=".txt" />
+    <button id="uploadBtn">Import & Ingest File</button>
+  </div>
+  <button id="pingBtn">Ping server</button>
+<div id="pingOut" class="muted"></div>
+  <div id="utilOut" class="muted"></div>
+</section>
+
 
   <script>
+    window.addEventListener('DOMContentLoaded', () => {
+
     async function postJSON(url, body) {
       const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!r.ok) throw new Error(await r.text());
@@ -91,6 +195,93 @@
       const r = await fetch('/clear', { method: 'POST' });
       document.getElementById('clearOut').textContent = r.ok ? 'Cleared!' : 'Failed to clear.';
     };
-  </script>
+
+    document.getElementById('listBtn').onclick = async () => {
+    const out = document.getElementById('listOut');
+    out.textContent = 'Loading...';
+    try {
+      const r = await fetch('/list');
+      const data = await r.json();
+      const lines = [`Total: ${data.total}`, ''];
+      for (const it of data.items) {
+        lines.push(`#${it.idx + 1} (id ${it.id})`);
+        lines.push(it.preview);
+        lines.push('');
+      }
+      out.textContent = lines.join('\n');
+    } catch (e) {
+      out.textContent = e.message || String(e);
+    }
+  };
+
+
+  // Export (already working)
+document.getElementById('exportBtn').onclick = async () => {
+  const r = await fetch('/export');
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'memory.json';
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+document.getElementById('uploadBtn').onclick = async () => {
+  const fileInput = document.getElementById('uploadFile');
+  const out = document.getElementById('utilOut');
+
+  try {
+    if (!fileInput) throw new Error('#uploadFile not found');
+    if (!fileInput.files || fileInput.files.length === 0) {
+      out.textContent = 'Choose a .txt file first!';
+      return;
+    }
+    const file = fileInput.files[0];
+    out.textContent = `Selected: ${file.name} (${file.size} bytes)`;
+
+    if (!file.name.toLowerCase().endsWith('.txt')) {
+      out.textContent = 'Only .txt supported right now.';
+      return;
+    }
+
+    out.textContent = 'Reading file...';
+    const text = await file.text();
+    out.textContent = `Read ${text.length} chars; sending to /ingest...`;
+
+    const r = await fetch('/ingest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+
+    if (!r.ok) {
+      const msg = await r.text();
+      out.textContent = `Server error ${r.status}: ${msg}`;
+      return;
+    }
+
+    const data = await r.json();
+    out.textContent = `Uploaded! Added ${data.chunksAdded} chunks. Total: ${data.totalChunks}`;
+  } catch (e) {
+    out.textContent = `Upload failed: ${e.message}`;
+  }
+};
+
+
+
+  document.getElementById('pingBtn').onclick = async () => {
+  const out = document.getElementById('pingOut');
+  out.textContent = 'Pinging...';
+  try {
+    const r = await fetch('/ping');
+    out.textContent = r.ok ? 'Server OK ✅' : `Ping failed: ${r.status}`;
+  } catch (e) {
+    out.textContent = `Ping error: ${e.message}`;
+  }
+};
+
+}); // end DOMContentLoaded
+</script>
 </body>
 </html>
