@@ -96,6 +96,37 @@
   margin-right: 8px;
 }
 
+
+.answer-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  margin-right: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.chunks-list { display: grid; gap: 10px; }
+.chunk-card {
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+}
+.chunk-title { font-weight: 700; font-size: 13px; margin-bottom: 6px; }
+.chunk-score { font-size: 12px; color: var(--muted); }
+
+.row + .row { margin-top: 12px; }
+.hidden { display: none; }
 </style>
 
 
@@ -118,22 +149,31 @@
       <input id="q" placeholder="Ask a question..." />
       <button id="askBtn">Ask</button>
       <div class="row">
-        <h3>Top chunks</h3>
-        <div id="chunks" class="chunks"></div>
-      </div>
+      <h3>Top chunks</h3>
+      <div id="chunks" class="chunks"></div>
+    </div>
       <div class="row">
         <h3>Answer (uses API if available)</h3>
-        <pre id="answer"></pre>
+        <div id="answer" class="answer-card"></div>
         <div class="muted">If empty, your API quota is out — retrieval still works above.</div>
       </div>
     </div>
   </section>
 
   <section class="card">
-  <h2>3) Stored chunks</h2>
-  <button id="listBtn">List chunks</button>
-  <div id="listOut" class="chunks" style="margin-top:8px;"></div>
+  <div style="display:flex;justify-content:space-between;align-items:center;">
+    <h2 style="margin:0;">3) Stored chunks</h2>
+    <button id="toggleListBtn">Show chunks</button>
+  </div>
+  <div class="row" id="listWrap" class="hidden"> <!-- starts hidden via JS -->
+    <input id="filterChunks" placeholder="Filter preview text..." />
+    <button id="listBtn">Refresh</button>
+
+    <div id="listContainer" class="chunks-list" style="margin-top:8px;"></div>
+  </div>
 </section>
+
+
 
   <section class="card">
   <h2>3) Utilities</h2>
@@ -145,14 +185,36 @@
     <input type="file" id="uploadFile" accept=".txt" />
     <button id="uploadBtn">Import & Ingest File</button>
   </div>
+  <div class="row" style="margin-top: 12px;">
   <button id="pingBtn">Ping server</button>
-<div id="pingOut" class="muted"></div>
+  <div id="pingOut" class="muted"></div>
+</div>
   <div id="utilOut" class="muted"></div>
 </section>
 
 
-  <script>
-    window.addEventListener('DOMContentLoaded', () => {
+<script>
+    function linkCitations(text) {
+  // turns "...[#1] and [#2]" into anchors targeting chunk cards
+  return text.replace(/\[#(\d+)\]/g, (_m, n) => {
+    const id = `chunk-${n}`;
+    return `<a href="#${id}" class="badge">#${n}</a>`;
+  });
+}
+
+function renderChunks(container, chunks) {
+  if (!chunks?.length) { container.textContent = 'No chunks.'; return; }
+  container.innerHTML = chunks.map((c, i) => `
+    <div class="chunk-card" id="chunk-${i+1}">
+      <div class="chunk-title">[#${i+1}] <span class="chunk-score">(score ${c.score})</span></div>
+      <div>${c.text.replace(/</g,'&lt;')}</div>
+    </div>
+  `).join('\n');
+}
+
+
+
+window.addEventListener('DOMContentLoaded', () => {
 
     async function postJSON(url, body) {
       const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -178,41 +240,92 @@
     };
 
     document.getElementById('askBtn').onclick = async () => {
-      const q = encodeURIComponent(document.getElementById('q').value.trim());
-      const chunksEl = document.getElementById('chunks');
-      const ansEl = document.getElementById('answer');
-      chunksEl.textContent = 'Searching...'; ansEl.textContent = '';
-      try {
-        const res = await getJSON(`/ask?q=${q}&k=4`);
-        chunksEl.textContent = res.chunks.map(c => `${c.ref} (score ${c.score}):\n${c.text}`).join('\n\n');
-        ansEl.textContent = res.answer || '';
-      } catch (e) {
-        chunksEl.textContent = e.message;
-      }
-    };
+  const q = document.getElementById('q').value.trim();
+  const chunksEl = document.getElementById('chunks');
+  const ansEl = document.getElementById('answer');
+  if (!q) return;
 
-    document.getElementById('clearBtn').onclick = async () => {
-      const r = await fetch('/clear', { method: 'POST' });
-      document.getElementById('clearOut').textContent = r.ok ? 'Cleared!' : 'Failed to clear.';
-    };
+  chunksEl.textContent = 'Searching...'; ansEl.textContent = '';
+  try {
+    const res = await getJSON(`/ask?q=${encodeURIComponent(q)}&k=4`);
 
-    document.getElementById('listBtn').onclick = async () => {
-    const out = document.getElementById('listOut');
-    out.textContent = 'Loading...';
-    try {
-      const r = await fetch('/list');
-      const data = await r.json();
-      const lines = [`Total: ${data.total}`, ''];
-      for (const it of data.items) {
-        lines.push(`#${it.idx + 1} (id ${it.id})`);
-        lines.push(it.preview);
-        lines.push('');
-      }
-      out.textContent = lines.join('\n');
-    } catch (e) {
-      out.textContent = e.message || String(e);
+    // render chunks as small cards with anchors
+    renderChunks(chunksEl, res.chunks);
+
+    // beautify answer: link [#1] citations to the chunk cards
+    const html = linkCitations(res.answer || '');
+    ansEl.innerHTML = html || '<span class="muted">No answer produced.</span>';
+  } catch (e) {
+    chunksEl.textContent = e.message;
+  }
+
+};
+
+
+document.getElementById('clearBtn').onclick = async () => {
+    const r = await fetch('/clear', { method: 'POST' });
+    document.getElementById('clearOut').textContent = r.ok ? 'Cleared!' : 'Failed to clear.';
+};
+
+
+
+//listbtn handler
+async function refreshChunks(filter = '') {
+  const container = document.getElementById('listContainer');
+  container.innerHTML = '<div class="muted">Loading…</div>';
+  try {
+    const r = await fetch('/list');
+    const data = await r.json();
+    const items = (data.items || []);
+    const filtered = filter
+      ? items.filter(it => it.preview.toLowerCase().includes(filter.toLowerCase()))
+      : items;
+
+    if (!filtered.length) {
+      container.innerHTML = '<div class="muted">No chunks found.</div>';
+      return;
     }
-  };
+
+    container.innerHTML = filtered.map((it, idx) => `
+      <div class="chunk-card">
+        <div class="chunk-title">#${it.idx + 1} (id ${it.id})</div>
+        <div>${it.preview.replace(/</g,'&lt;')}</div>
+      </div>
+    `).join('\n');
+  } catch (e) {
+    container.innerHTML = `<div class="muted">${e.message}</div>`;
+  }
+}
+
+// --- Stored chunks show/hide
+const listWrap = document.getElementById('listWrap');
+const toggleListBtn = document.getElementById('toggleListBtn');
+
+// start hidden
+listWrap.classList.add('hidden');
+
+toggleListBtn.onclick = () => {
+  const nowHidden = listWrap.classList.toggle('hidden');
+  toggleListBtn.textContent = nowHidden ? 'Show chunks' : 'Hide chunks';
+  if (!nowHidden) {
+    // when opening, refresh immediately
+    const filt = document.getElementById('filterChunks').value.trim();
+    refreshChunks(filt);
+  }
+};
+
+
+document.getElementById('listBtn').onclick = () => {
+  const filt = document.getElementById('filterChunks').value.trim();
+  refreshChunks(filt);
+};
+document.getElementById('filterChunks').addEventListener('input', (e) => {
+  refreshChunks(e.target.value.trim());
+});
+
+// initial load once
+refreshChunks('');
+  
 
 
   // Export (already working)
