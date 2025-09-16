@@ -31,11 +31,26 @@ Export memory (JSON), Clear memory
 
 Ping button to verify server is alive
 
-## Roadmap
-- **PDF ingestion**: add a `/upload-pdf` route using `pdfjs-dist` (v3 legacy) for robust text extraction.
-- **Docker**: provide a Dockerfile + `docker-compose.yml` for one-command local runs.
-- **Deployment**:
-  - **Render**: simple Node deploy for public demos (retrieval + UI).
-  - **GPU host for Ollama**: optional remote LLM; otherwise fall back to chunk summary or OpenAI key if available.
-- **UI polish**: syntax highlighting, copy button for answers, expand/collapse long chunks.
-- **Config**: expose chunk size/overlap via environment variables for easy benchmarking.
+
+## Project structure
+
+├─ public/ # Static UI (index.html, style.css, favicon)
+├─ src/
+│ ├─ embeddings.js # Local multilingual embeddings (Xenova MiniLM) – singleton, mean-pool
+│ ├─ retrieval.js # Chunking + cosine similarity + top-K retrieval
+│ ├─ store.js # In-memory store + JSON persistence (data/memory.json)
+│ └─ app.js # Express routes (ingest, ask, list, clear, export, ping)
+├─ server.js # Entry point: builds app + starts server
+├─ data/ # Persisted memory (ignored in git, keep .gitkeep)
+└─ uploads/ # File uploads (currently unused, ignored in git)
+
+### How it works
+1. **Ingest**: splits input into overlapping chunks → local **embeddings** via Xenova → stored with vectors.
+2. **Ask**: embeds the query → **cosine similarity** over stored vectors → returns top-K chunks → optional LLM (Ollama/OpenAI) formats an answer with citations.
+3. **Persistence**: chunks saved to `data/memory.json`. Export/Import supported.
+
+### Roadmap
+- PDF ingestion (pdf.js server-side)
+- Dockerfile (one-command run)
+- One-click deployment (Render/Fly/Zeet)
+- Optional: switchable embedding backends (OpenAI/Cloudflare)
