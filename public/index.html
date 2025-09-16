@@ -4,130 +4,8 @@
   <meta charset="utf-8" />
   <title>Mini RAG (Local)</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <style>
-  :root {
-    /* still dark, but brighter + higher contrast */
-    --bg: #0e141b;        /* was #0b0f14 */
-    --card: #151e28;      /* was #121820 */
-    --text: #f2f6fb;      /* was #e7edf3 */
-    --muted: #b7c4d1;     /* was #9fb0bf */
-    --border: #2a394a;    /* was #1f2a36 */
-    --accent: #3aa0ff;
-    --field: #121a24;     /* inputs/pre background */
-  }
+  <link rel="stylesheet" href="style.css" />
 
-  * { box-sizing: border-box; }
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-    max-width: 980px;
-    margin: 32px auto;
-    padding: 0 16px 48px;
-    line-height: 1.6;                 /* easier reading */
-  }
-
-  h1 { font-size: 28px; margin: 0 0 16px; letter-spacing: .2px; font-weight: 700; }
-  h2 {
-    font-size: 18px;
-    margin: 0 0 10px;
-    color: var(--text);        /* use full text color */
-    font-weight: 700;
-    letter-spacing: 0.3px;
-    }
-
-
-  .card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 18px;
-    margin: 18px 0;
-    box-shadow: 0 10px 24px rgba(0,0,0,0.28); /* slightly stronger but soft */
-  }
-
-  .row { display: grid; gap: 12px; }
-
-  textarea, input {
-    width: 100%;
-    background: var(--field);         /* brighter than before */
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 12px 14px;
-    outline: none;
-    font-size: 15px;                  /* bigger text */
-  }
-  textarea::placeholder, input::placeholder { color: #7f95a8; }
-  textarea:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(58,160,255,.15); }
-
-  button {
-    border: 1px solid var(--border);
-    background: linear-gradient(180deg, #1a2330, #131b25);
-    color: var(--text);
-    padding: 11px 14px;
-    border-radius: 10px;
-    cursor: pointer;
-    font-weight: 700;
-  }
-  button:hover { border-color: var(--accent); transform: translateY(-0.5px); }
-
-  .chunks, pre {
-    background: var(--field);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 12px;
-    line-height: 1.55;                /* more legible blocks */
-    white-space: pre-wrap;            /* wrap long lines */
-  }
-
-  .muted { color: var(--muted); font-size: 0.92em; }
-  .stack { display: grid; gap: 6px; }
-
-  footer {
-    margin-top: 20px;
-    color: var(--muted);
-    font-size: 12px;
-    text-align: center;
-  }
-
-  .row button,
-.row input[type="file"] {
-  margin-right: 8px;
-}
-
-
-.answer-card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 12px 14px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-}
-
-.badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  margin-right: 6px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.chunks-list { display: grid; gap: 10px; }
-.chunk-card {
-  background: var(--field);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px;
-}
-.chunk-title { font-weight: 700; font-size: 13px; margin-bottom: 6px; }
-.chunk-score { font-size: 12px; color: var(--muted); }
-
-.row + .row { margin-top: 12px; }
-.hidden { display: none; }
-</style>
 
 
 </head>
@@ -135,13 +13,19 @@
   <h1>Mini RAG (Local Embeddings)</h1>
 
   <section class="card">
-    <h2>1) Ingest text</h2>
-    <div class="row">
-      <textarea id="ingestText" rows="6" placeholder="Paste any text here..."></textarea>
+  <h2>1) Ingest text</h2>
+  <div class="row">
+    <textarea id="ingestText" rows="6" placeholder="Paste any text here..."></textarea>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <input type="file" id="ingestFile" accept=".txt" />
       <button id="ingestBtn">Ingest</button>
-      <div id="ingestOut" class="muted"></div>
     </div>
-  </section>
+
+    <div id="ingestOut" class="muted"></div>
+  </div>
+</section>
+
 
   <section class="card">
     <h2>2) Ask</h2>
@@ -160,37 +44,35 @@
     </div>
   </section>
 
-  <section class="card">
+ <section class="card">
   <div style="display:flex;justify-content:space-between;align-items:center;">
     <h2 style="margin:0;">3) Stored chunks</h2>
     <button id="toggleListBtn">Show chunks</button>
   </div>
-  <div class="row" id="listWrap" class="hidden"> <!-- starts hidden via JS -->
+
+  <div id="listWrap" class="row hidden"> <!-- starts hidden -->
     <input id="filterChunks" placeholder="Filter preview text..." />
     <button id="listBtn">Refresh</button>
-
     <div id="listContainer" class="chunks-list" style="margin-top:8px;"></div>
   </div>
 </section>
 
 
 
-  <section class="card">
+
+<section class="card">
   <h2>3) Utilities</h2>
   <div class="row">
     <button id="clearBtn">Clear memory</button>
     <button id="exportBtn">Export memory (.json)</button>
   </div>
+  <div id="clearOut" class="muted" style="margin-top:8px;"></div> <!-- add this -->
   <div class="row" style="margin-top: 12px;">
-    <input type="file" id="uploadFile" accept=".txt" />
-    <button id="uploadBtn">Import & Ingest File</button>
+    <button id="pingBtn">Ping server</button>
+    <div id="pingOut" class="muted"></div>
   </div>
-  <div class="row" style="margin-top: 12px;">
-  <button id="pingBtn">Ping server</button>
-  <div id="pingOut" class="muted"></div>
-</div>
-  <div id="utilOut" class="muted"></div>
 </section>
+
 
 
 <script>
@@ -227,19 +109,51 @@ window.addEventListener('DOMContentLoaded', () => {
       return r.json();
     }
 
-    document.getElementById('ingestBtn').onclick = async () => {
-      const text = document.getElementById('ingestText').value.trim();
-      const out = document.getElementById('ingestOut');
-      out.textContent = 'Ingesting...';
-      try {
-        const res = await postJSON('/ingest', { text });
-        out.textContent = JSON.stringify(res);
-      } catch (e) {
-        out.textContent = e.message;
-      }
-    };
+  async function doIngest(text) {
+  const out = document.getElementById('ingestOut');
+  if (!text || !text.trim()) {
+    out.textContent = 'Nothing to ingest.';
+    return;
+  }
+  out.textContent = `Ingesting ${text.length} chars…`;
+  const r = await fetch('/ingest', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text })
+  });
+  if (!r.ok) {
+    out.textContent = `Server error ${r.status}: ${await r.text()}`;
+    return;
+  }
+  const data = await r.json();
+  out.textContent = `Done! Added ${data.chunksAdded} chunks. Total: ${data.totalChunks}`;
+}
 
-    document.getElementById('askBtn').onclick = async () => {
+document.getElementById('ingestBtn').onclick = async () => {
+  const fileEl = document.getElementById('ingestFile');
+  const out = document.getElementById('ingestOut');
+
+  // 1) Prefer file if selected
+  if (fileEl.files && fileEl.files.length > 0) {
+    const file = fileEl.files[0];
+    if (!file.name.toLowerCase().endsWith('.txt')) {
+      out.textContent = 'Only .txt supported right now.';
+      return;
+    }
+    out.textContent = `Reading ${file.name}…`;
+    const text = await file.text();
+    await doIngest(text);
+    fileEl.value = ''; // clear selection
+    return;
+  }
+
+  // 2) Fallback to textarea
+  const text = document.getElementById('ingestText').value;
+  await doIngest(text);
+};
+
+
+document.getElementById('askBtn').onclick = async () => {
   const q = document.getElementById('q').value.trim();
   const chunksEl = document.getElementById('chunks');
   const ansEl = document.getElementById('answer');
@@ -340,50 +254,8 @@ document.getElementById('exportBtn').onclick = async () => {
   URL.revokeObjectURL(url);
 };
 
-document.getElementById('uploadBtn').onclick = async () => {
-  const fileInput = document.getElementById('uploadFile');
-  const out = document.getElementById('utilOut');
 
-  try {
-    if (!fileInput) throw new Error('#uploadFile not found');
-    if (!fileInput.files || fileInput.files.length === 0) {
-      out.textContent = 'Choose a .txt file first!';
-      return;
-    }
-    const file = fileInput.files[0];
-    out.textContent = `Selected: ${file.name} (${file.size} bytes)`;
-
-    if (!file.name.toLowerCase().endsWith('.txt')) {
-      out.textContent = 'Only .txt supported right now.';
-      return;
-    }
-
-    out.textContent = 'Reading file...';
-    const text = await file.text();
-    out.textContent = `Read ${text.length} chars; sending to /ingest...`;
-
-    const r = await fetch('/ingest', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
-    });
-
-    if (!r.ok) {
-      const msg = await r.text();
-      out.textContent = `Server error ${r.status}: ${msg}`;
-      return;
-    }
-
-    const data = await r.json();
-    out.textContent = `Uploaded! Added ${data.chunksAdded} chunks. Total: ${data.totalChunks}`;
-  } catch (e) {
-    out.textContent = `Upload failed: ${e.message}`;
-  }
-};
-
-
-
-  document.getElementById('pingBtn').onclick = async () => {
+document.getElementById('pingBtn').onclick = async () => {
   const out = document.getElementById('pingOut');
   out.textContent = 'Pinging...';
   try {
@@ -393,6 +265,7 @@ document.getElementById('uploadBtn').onclick = async () => {
     out.textContent = `Ping error: ${e.message}`;
   }
 };
+
 
 }); // end DOMContentLoaded
 </script>

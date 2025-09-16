@@ -166,7 +166,7 @@ async function generateWithOllama(q, context) {
       prompt:
         `You are a concise assistant. Use ONLY the context to answer.\n` +
         `If the answer isn't in the context, say "I don't know".\n` +
-        `Match the user's language (Swedish or English).\n\n` +
+        `Always answer in the same language as the input question.\n\n` +
         `Context:\n${context}\n\nQuestion: ${q}\n\n` +
         `Write 1–3 sentences max and include citations like [#1], [#2].`,
       stream: false
@@ -301,15 +301,15 @@ app.post('/import', async (req, res) => {
 //-----Debug routes----
 
 // quick health checks
-app.get('/ping', (_req, res) => res.json({ ok: true, t: Date.now() }));
+app.get('/ping', (_req, res) => {
+  res.json({ ok: true, time: new Date().toISOString() });
+});
 
 // log every request (method + url)
 app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
-
-app.get('/ping', (_req, res) => res.json({ ok: true, t: Date.now() }));
 
 
 app.listen(3000, () => {

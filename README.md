@@ -30,3 +30,12 @@ Ask questions; shows Top chunks and Answer with [#[ref]] citations
 Export memory (JSON), Clear memory
 
 Ping button to verify server is alive
+
+## Roadmap
+- **PDF ingestion**: add a `/upload-pdf` route using `pdfjs-dist` (v3 legacy) for robust text extraction.
+- **Docker**: provide a Dockerfile + `docker-compose.yml` for one-command local runs.
+- **Deployment**:
+  - **Render**: simple Node deploy for public demos (retrieval + UI).
+  - **GPU host for Ollama**: optional remote LLM; otherwise fall back to chunk summary or OpenAI key if available.
+- **UI polish**: syntax highlighting, copy button for answers, expand/collapse long chunks.
+- **Config**: expose chunk size/overlap via environment variables for easy benchmarking.
