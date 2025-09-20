@@ -20,19 +20,19 @@ Static UI in `/public`.
 - **Models:** Workers AI (embeddings + chat)  
 - **Static assets:** served via `assets` in `wrangler.toml`
 
---
+---
 
 ![Screenshot](public/screenshot.png)
 
 ---
 
 ## Run (Local Dev)
-
 ```bash
 npm install
 npx wrangler login
 npm run dev
 # open http://127.0.0.1:8787
+```
 
 ## Features
 
@@ -43,9 +43,10 @@ Ask questions → top chunks + citation-style answers
 Export / Clear memory
 
 Cloudflare-native stack (no local Ollama needed)
---
+
 
 ## Project structure
+```t
 Local-old-vers
 ├─ public/ # Static UI (index.html, style.css, favicon)
 ├─ src/
@@ -67,6 +68,8 @@ src/
 
 wrangler.toml   # Bindings (AI, D1, Vectorize, assets)
 
+```
+
 ### How it works OLD-vers
 1. **Ingest**: splits input into overlapping chunks → local **embeddings** via Xenova → stored with vectors.
 2. **Ask**: embeds the query → **cosine similarity** over stored vectors → returns top-K chunks → optional LLM (Ollama/OpenAI) formats an answer with citations.
@@ -80,7 +83,10 @@ wrangler.toml   # Bindings (AI, D1, Vectorize, assets)
 ### Roadmap
 - PDF ingestion (pdf.js server-side)
 
+--- 
+
 ## Deploy to Cloudflare
+```bash
 # One-time: create database + vector index
 npx wrangler d1 create mini_rag_db
 npx wrangler vectorize create mini_rag_vectors --dimensions=768 --metric=cosine
@@ -92,7 +98,8 @@ npx wrangler d1 execute mini_rag_db --remote --command "CREATE TABLE IF NOT EXIS
 npm run deploy
 # → https://mini-rag-edge.<your-subdomain>.workers.dev
 
-
+```
+---
 ## Branches
 
 cloudflare — this edge deployment (Workers AI + D1 + Vectorize)
