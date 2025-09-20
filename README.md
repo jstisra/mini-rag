@@ -1,75 +1,97 @@
-# Mini-RAG (Edge on Cloudflare)
+# Mini-RAG (Cloudflare Edge)
 
-[![Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](#)
-[![Hono](https://img.shields.io/badge/Hono-Router-111?logo=hono)](#)
-[![D1](https://img.shields.io/badge/DB-D1%20(SQLite)-0ea5e9)](#)
-[![Vectorize](https://img.shields.io/badge/Vector%20DB-Vectorize-8b5cf6)](#)
-[![Workers AI](https://img.shields.io/badge/LLM-Workers%20AI-f97316)](#)
-[![License](https://img.shields.io/badge/License-MIT-14b8a6)](#)
+Small Retrieval-Augmented Generation app at the edge:
+- Router: Hono (Cloudflare Workers)
+- Storage: D1 (SQLite serverless)
+- Vector search: Vectorize
+- Models: Workers AI (embeddings + chat)
+- Static UI: served from `/public`
 
-A minimal **Retrieval-Augmented Generation** app deployed at the **edge**.  
-Ingest text → embed → store → retrieve top-K → answer with **citations**.
-
-- Runtime: **Cloudflare Workers** with **Hono**
-- Storage: **D1** (SQLite serverless) for chunks/metadata
-- Vector search: **Vectorize**
-- Models: **Workers AI** for embeddings + chat
-- Static UI served from `/public`
-
-> Looking for the local/Ollama version? See branch `local-xenova`.
+> The local/Ollama version lives in branch `local-xenova`.
 
 ---
 
-## Quick start (dev)
+## Quick start
 
-Requirements:
-- Node 18+ (just for tooling)
-- Cloudflare account + **Wrangler** (CLI)
+**Prereqs**
+- Node 18+
+- Cloudflare account + Wrangler CLI (`npx wrangler login`)
 
-Install deps:
+**Install**
 ```bash
 npm i
 
-Login once:
-npx wrangler login
 
 
-Set up resources (one-time):
+Provision (one-time)
 
-# D1 (copy database_id into wrangler.toml)
+# D1 (copy the printed database_id into wrangler.toml)
 npx wrangler d1 create mini_rag_db
 
-# Vectorize index
+# Vector index (768 dims, cosine)
 npx wrangler vectorize create mini_rag_vectors --dimensions=768 --metric=cosine
 
-# Create table
+# Table
 npx wrangler d1 execute mini_rag_db --remote --command "CREATE TABLE IF NOT EXISTS chunks (id INTEGER PRIMARY KEY, text TEXT NOT NULL, meta TEXT);"
 
 
-Run locally (remote bindings enabled):
+Dev
 
 npm run dev
-# or: npx wrangler dev --remote
+# http://127.0.0.1:8787
 
 
 Deploy
 
 npm run deploy
-# prints: https://mini-rag-edge.<your-subdomain>.workers.dev
+# -> https://mini-rag-edge.<your-subdomain>.workers.dev
 
-Project structure
-public/              # Static UI (index.html, style.css, screenshot.png)
+
+API
+POST /ingest
+
+Body:
+
+{ "text": "Stockholm is the capital of Sweden.", "meta": { "source": "demo" } }
+
+
+Response:
+
+{ "ok": true, "chunksAdded": 1 }
+
+GET /ask?q=...&k=4
+
+Response:
+
+{
+  "ok": true,
+  "query": "What is the capital of Sweden?",
+  "topK": 4,
+  "chunks": [
+    { "ref": "#1", "score": 0.9056, "text": "Stockholm is the capital of Sweden." }
+  ],
+  "answer": "According to the context, the capital of Sweden is Stockholm.",
+  "citations": [
+    { "id": 1, "meta": { "source": "demo" } }
+  ]
+}
+
+DELETE /delete/:id
+
+204 No Content
+
+GET /ping
+
+Health check.
+
+
+
+Structure
+public/           # static UI (index.html, style.css)
 src/
-  app.js             # Hono routes (ingest, ask, delete, ping) – Worker entry
-  embeddings.js      # Workers AI embeddings + chat helpers
-  retrieval.js       # Chunking + Vectorize top-K retrieval
-  store.js           # D1 helpers (insert/get/delete)
-wrangler.toml        # Cloudflare bindings (AI, D1, Vectorize, assets)
-package.json         # scripts: dev/deploy
-
-
-Branches
-
-main (or cloudflare) — edge deployment (this)
-
-local-xenova — local embeddings + Express + memory.json
+  app.js          # Hono routes (ingest, ask, delete, ping) – Worker entry
+  embeddings.js   # Workers AI (embed + chat)
+  retrieval.js    # chunking + Vectorize top-K
+  store.js        # D1 helpers (insert/get/delete)
+wrangler.toml     # bindings (AI, D1, Vectorize) + assets
+package.json      # dev/deploy scripts
