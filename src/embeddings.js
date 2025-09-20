@@ -3,39 +3,35 @@
  *
  * What it does:
  *   - Turns text into a numeric vector (embedding).
- *   - Uses Xenova’s Transformers with a small MiniLM model (runs locally, no API needed).
+ *   - Uses Cloudflare Workers AI (hosted) — no local model / no Ollama needed.
  *
  * How it works:
- *   - Loads the model once and reuses it (singleton).
- *   - Combines token outputs into one vector using mean pooling.
- *   - Exports a single `embed(text)` function that returns an array of floats.
+ *   - Calls the embedding model through the Worker binding: env.AI.
+ *   - Returns a plain array of floats (same shape you used before, just from CF).
  *
- * Why it’s here:
- *   - Needed whenever we want to compare or search text.
- *   - Easy to swap out the model later (OpenAI, other local models, etc.).
+ * Usage:
+ *   const vec = await embed("some text", c.env)
+ *   // NOTE: pass the Cloudflare env from your route handler
  */
-import { pipeline } from '@xenova/transformers';
 
-// Singleton embedder init
-let _embedder;
-async function getEmbedder() {
-  if (!_embedder) {
-    _embedder = await pipeline('feature-extraction', 'Xenova/paraphrase-multilingual-MiniLM-L12-v2');
-  }
-  return _embedder;
-}
+const EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5";
 
-// Mean-pool tokens → single vector
-export async function embed(text) {
-  const embedder = await getEmbedder(); //is model ready?
-  const output = await embedder(text); //
-  const data = output.data;
-  const [ , seq, dim ] = output.dims;
-  const vec = new Float32Array(dim);
-  for (let t = 0; t < seq; t++) {
-    const base = t * dim;
-    for (let j = 0; j < dim; j++) vec[j] += data[base + j];
+/**
+ * Create an embedding vector for the given text.
+ * @param {string} text
+ * @param {any} env  // Cloudflare env (must include AI binding)
+ * @returns {Promise<number[]>}
+ */
+export async function embed(text, env) {
+  if (!env || !env.AI) {
+    throw new Error("Workers AI binding missing. Pass your Cloudflare env as the second argument to embed(text, env).");
   }
-  for (let j = 0; j < dim; j++) vec[j] /= seq;
-  return Array.from(vec);
+
+  // Cloudflare Workers AI: returns { data: [ Float32ArrayLike ] }
+  const out = await env.AI.run(EMBEDDING_MODEL, { text });
+  const vector = out?.data?.[0];
+  if (!vector || !Array.isArray(vector)) {
+    throw new Error("Failed to get embedding from Workers AI.");
+  }
+  return vector;
 }

@@ -1,49 +1,40 @@
 /**
- * retrieval.js
+ * (Cloud mode): use Cloudflare Vectorize + D1
+ * - embeds the question via Workers AI
+ * - queries nearest vectors
+ * - hydrates full text via D1 by vector id
  *
- * What it does:
- *   - Splits text into chunks and finds which ones are most similar to a query.
- *
- * How it works:
- *   - Breaks long text into overlapping chunks.
- *   - Calculates cosine similarity between vectors.
- *   - Ranks stored items against the query embedding.
- *
- * Why it’s here:
- *   - Handles the math + text logic only (no side effects).
- *   - Can be reused with any embedding model or storage system.
+ * @param {any} env  Cloudflare Worker env (must include VECTOR_INDEX and DB)
+ * @param {string} question
+ * @param {number} k
+ * @returns {Promise<Array<{ref:string, score:number, text:string, id:number, meta?:any}>>}
  */
-
-import { rawMemory } from './store.js';
-
-export function chunkText(text, chunkSize = 800, overlap = 120) {
-  const chunks = [];
-  let i = 0;
-  while (i < text.length) {
-    const end = Math.min(i + chunkSize, text.length);
-    const slice = text.slice(i, end).trim();
-    if (slice) chunks.push(slice);
-    if (end === text.length) break;
-    i = Math.max(0, end - overlap);
+export async function topKByVectorize(env, question, k = 4) {
+  if (!env?.VECTOR_INDEX) {
+    throw new Error("VECTOR_INDEX binding missing. Did you configure wrangler.toml?");
   }
-  return chunks;
-}
 
-export function cosineSim(a, b) {
-  let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na  += a[i] * a[i];
-    nb  += b[i] * b[i];
+  // 1) embed the query using Workers AI
+  const qVec = await embed(question, env);
+
+  // 2) query nearest neighbors
+  const result = await env.VECTOR_INDEX.query(qVec, { topK: k });
+  const matches = result?.matches || [];
+
+  // 3) hydrate text/metadata from D1 by ID
+  const items = [];
+  for (const [i, m] of matches.entries()) {
+    const idNum = Number(m.id);
+    const row = await getChunkById?.(env, idNum); // will work after we update store.js
+    if (row) {
+      items.push({
+        ref: `#${i + 1}`,
+        score: Number((m.score ?? 0).toFixed(4)),
+        id: row.id,
+        text: row.text,
+        meta: row.meta ? JSON.parse(row.meta) : null,
+      });
+    }
   }
-  return (!na || !nb) ? 0 : dot / (Math.sqrt(na) * Math.sqrt(nb));
-}
-
-export function topKByCosine(qVec, k = 4) {
-  const mem = rawMemory();
-  return mem
-    .map(it => ({ ...it, score: cosineSim(qVec, it.embedding) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, k)
-    .map((r, i) => ({ ref: `#${i+1}`, score: Number(r.score.toFixed(4)), text: r.text }));
+  return items;
 }

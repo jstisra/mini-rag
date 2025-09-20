@@ -1,0 +1,16 @@
+name = "mini-rag-edge"
+main = "src/app.js"
+compatibility_date = "2025-09-20"
+compatibility_flags = ["nodejs_compat"]
+assets = { directory = "public" }
+
+ai = { binding = "AI" }
+
+[[d1_databases]]
+binding = "DB"                       # <-- must be DB to match env.DB in code
+database_name = "mini_rag_db"
+database_id = "c25d4b8c-5722-4588-99e3-f53d9836dfc0"  
+
+[[vectorize]]
+binding = "VECTOR_INDEX"
+index_name = "mini_rag_vectors"

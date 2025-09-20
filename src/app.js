@@ -1,147 +1,148 @@
 /**
- * app.js
+ * app.js — Cloudflare Workers (Hono) version
  *
  * What it does:
- *   - Sets up all HTTP routes for the Mini RAG app.
+ *   - Exposes the same API shape you had: /ping, /ingest, /ask, /delete/:id
+ *   - Uses Cloudflare bindings:
+ *       - env.DB (D1) for storing text chunks + metadata
+ *       - env.VECTOR_INDEX (Vectorize) for embeddings search
+ *       - env.AI (Workers AI) for embeddings + chat/answer
  *
- * How it works:
- *   - Serves static files (like index.html).
- *   - Handles endpoints to add text/files into memory.
- *   - Lets users ask questions (retrieval + optional LLM).
- *   - Provides utilities: clear, list, export, import, ping.
+ * Why Hono (not Express):
+ *   - Express doesn't run on Workers; Hono is a tiny router designed for Workers.
  *
- * Why it’s here:
- *   - Acts as the main API layer.
- *   - Uses `store.js` and `retrieval.js` for the actual logic.
- *   - Keeps routes simple and separated from implementation details.
+ * Notes:
+ *   - This file is the Worker entry (set main="src/app.js" in wrangler.toml).
+ *   - Your old Node server (server.js) is for the local-xenova branch only.
  */
 
-import express from 'express';
-import OpenAI from 'openai';
+import { Hono } from 'hono';
+import { chunkText, topKByVectorize } from './retrieval.js';
+import { insertChunk, deleteChunk } from './store.js';
 import { embed } from './embeddings.js';
-import { chunkText, topKByCosine } from './retrieval.js';
-import {
-  addTextChunks, saveMemory, loadMemory, clearMemory,
-  listMemory, size, importMemory
-} from './store.js';
 
-const openaiKey = process.env.OPENAI_API_KEY?.trim();
-const openai = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
+// --- Models (easy to swap later) ---
+const EMBEDDING_MODEL = '@cf/baai/bge-base-en-v1.5';
+const CHAT_MODEL = '@cf/meta/llama-3-8b-instruct';
 
-async function generateWithOllama(q, context) {
-  const r = await fetch('http://localhost:11434/api/generate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'llama3.2',
-      prompt:
-        `You are a concise assistant. Use ONLY the context to answer.\n` +
-        `If not found, say "I don't know". Match the user's language.\n\n` +
-        `Context:\n${context}\n\nQuestion: ${q}\n\n` +
-        `Answer in 1–3 sentences with citations like [#1].`,
-      stream: false
-    })
-  });
-  const data = await r.json();
-  return data?.response || null;
+// Small helper: call Workers AI chat with context grounding
+async function answerWithWorkersAI(env, question, context) {
+  const messages = [
+    // Keep context separate and instruct the model to only use it
+    ...(context ? [{ role: 'system', content: `Context:\n${context}` }] : []),
+    { role: 'system', content: 'Use ONLY the provided context. If missing, say you do not know. Answer concisely.' },
+    { role: 'user', content: question }
+  ];
+
+  const { response } = await env.AI.run(CHAT_MODEL, { messages });
+  return response;
 }
 
-export async function buildApp() {
-  const app = express();
-  app.use(express.json({ limit: '10mb' }));
-  app.use(express.static('public'));
+const app = new Hono();
 
-  // health
-  app.get('/ping', (_req, res) => res.json({ ok: true }));
+// -------- Health --------
+app.get('/ping', (c) => c.json({ ok: true }));
 
-  // ingest text
-  app.post('/ingest', async (req, res) => {
-    try {
-      const text = (req.body?.text || '').trim();
-      if (!text) return res.status(400).json({ error: 'Missing "text" in body' });
+// -------- Ingest text --------
+// Body: { text: string, meta?: any }
+// 1) Split into chunks
+// 2) Store each chunk in D1 (insertChunk) to get an id
+// 3) Embed the chunk via Workers AI
+// 4) Upsert vector into Vectorize with the same id
+app.post('/ingest', async (c) => {
+  try {
+    const { text, meta } = await c.req.json();
+    const clean = (text || '').trim();
+    if (!clean) return c.json({ error: 'Missing "text" in body' }, 400);
 
-      const chunks = chunkText(text, 800, 120);
-      const { added, total } = await addTextChunks(chunks, embed);
-      res.json({ ok: true, chunksAdded: added, totalChunks: total });
-    } catch (e) {
-      console.error(e);
-      res.status(500).json({ error: String(e?.message || e) });
+    // 1) Split
+    const chunks = chunkText(clean, 800, 120);
+
+    let added = 0;
+    for (const chunk of chunks) {
+      // 2) D1 insert
+      const row = await insertChunk(c.env, { text: chunk, meta });
+
+      // 3) Workers AI embedding
+      const vec = await embed(chunk, c.env); // uses EMBEDDING_MODEL under the hood
+
+      // 4) Upsert to Vectorize
+      await c.env.VECTOR_INDEX.upsert([{ id: String(row.id), values: vec }]);
+      added++;
     }
-  });
 
-  // ask
-  app.get('/ask', async (req, res) => {
-    try {
-      const q = (req.query.q || '').toString().trim();
-      const k = Math.max(1, Math.min(8, parseInt(req.query.k) || 4));
-      if (!q) return res.status(400).json({ error: 'Missing query ?q=' });
-      if (size() === 0) return res.status(400).json({ error: 'No documents ingested yet' });
+    return c.json({ ok: true, chunksAdded: added });
+  } catch (e) {
+    console.error(e);
+    return c.json({ error: String(e?.message || e) }, 500);
+  }
+});
 
-      const qVec = await embed(q);
-      const chunks = topKByCosine(qVec, k);
-      const context = chunks.map(c => `[${c.ref}] ${c.text}`).join('\n\n');
+// -------- Ask / Query --------
+// Query params: ?q=...&k=4
+// 1) Vectorize search to get topK ids
+// 2) Build a context string from the matched chunks
+// 3) Call Workers AI chat to get an answer grounded in that context
+app.get('/ask', async (c) => {
+  try {
+    const q = (c.req.query('q') || '').toString().trim();
+    const k = Math.max(1, Math.min(8, parseInt(c.req.query('k')) || 4));
+    if (!q) return c.json({ error: 'Missing query ?q=' }, 400);
 
-      let answer = null;
+    const top = await topKByVectorize(c.env, q, k); // [{ref,score,id,text,meta},...]
+    const context = top.map(item => `[${item.ref}] ${item.text}`).join('\n\n');
 
-      if (openai) {
-        try {
-          const prompt =
-            `Use ONLY the context chunks. If missing, say you don't know.\n` +
-            `Question: ${q}\n\nContext:\n${context}\n\n` +
-            `Answer briefly with citations like [#1], [#2].`;
-          const resp = await openai.responses.create({ model: 'gpt-4o-mini', input: prompt });
-          answer = resp.output_text || null;
-        } catch (e) {
-          console.warn('OpenAI failed:', e.message || e);
-        }
-      }
-
-      if (!answer) {
-        try { answer = await generateWithOllama(q, context); }
-        catch (e) { console.warn('Ollama failed:', e.message || e); }
-      }
-
-      if (!answer) {
-        // fallback: just echo the chunks
-        answer = chunks.map((c, i) => `• ${c.text} ([#${i+1}])`).join('\n');
-      }
-
-      res.json({ ok: true, query: q, topK: k, chunks, answer });
-    } catch (e) {
-      console.error(e);
-      res.status(500).json({ error: String(e?.message || e) });
+    // If nothing found, still return a friendly answer
+    let answer;
+    if (top.length === 0) {
+      answer = "I don't know. (No relevant context was found.)";
+    } else {
+      answer = await answerWithWorkersAI(c.env, q, context);
     }
-  });
 
-  // stored chunks & utilities
-  app.get('/list', (_req, res) => res.json({ total: size(), items: listMemory() }));
+    // Keep response shape similar to your old one
+    return c.json({
+      ok: true,
+      query: q,
+      topK: k,
+      chunks: top.map(({ ref, score, text }) => ({ ref, score, text })),
+      answer,
+      // Expose IDs + meta separately if a UI needs citations
+      citations: top.map(({ id, meta }) => ({ id, meta }))
+    });
+  } catch (e) {
+    console.error(e);
+    return c.json({ error: String(e?.message || e) }, 500);
+  }
+});
 
-  app.post('/clear', async (_req, res) => {
-    clearMemory();
-    await saveMemory().catch(() => {});
-    res.status(204).end();
-  });
+// -------- Delete by id --------
+// Removes the row from D1 and the vector from Vectorize
+app.delete('/delete/:id', async (c) => {
+  try {
+    const id = Number(c.req.param('id'));
+    if (!Number.isFinite(id)) return c.text('Invalid id', 400);
+    await deleteChunk(c.env, id);
+    await c.env.VECTOR_INDEX.deleteByIds([String(id)]);
+    return c.body(null, 204);
+  } catch (e) {
+    console.error(e);
+    return c.json({ error: String(e?.message || e) }, 500);
+  }
+});
 
-  app.get('/export', (_req, res) => {
-    // simple export by reading via listMemory + raw vectors are already persisted in memory.json
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Content-Disposition', 'attachment; filename="memory.json"');
-    res.send(JSON.stringify({ /* minimal pointer */ note: 'Use data/memory.json on disk for full export.' }, null, 2));
-  });
 
-  app.post('/import', async (req, res) => {
-    try {
-      const { nextId, items } = req.body || {};
-      if (!Array.isArray(items)) return res.status(400).json({ error: 'Invalid file format' });
-      importMemory(nextId, items);
-      await saveMemory();
-      res.json({ ok: true, total: size() });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
+// simple home route so / doesn't 404
+/**
+app.get('/', (c) => {
+  return c.text(
+    'Mini-RAG Edge is running.\n' +
+    'Try:\n' +
+    'GET  /ping\n' +
+    'POST /ingest  {"text":"..."}\n' +
+    'GET  /ask?q=your+question\n'
+  );
+});*/
 
-  // load memory at boot
-  await loadMemory();
-  return app;
-}
+
+export default app;

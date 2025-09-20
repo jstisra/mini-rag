@@ -1,0 +1,14 @@
+### health
+GET http://127.0.0.1:8787/ping
+
+### ingest
+POST http://127.0.0.1:8787/ingest
+content-type: application/json
+
+{
+  "text": "Stockholm is the capital of Sweden.",
+  "meta": { "source": "demo" }
+}
+
+### ask
+GET http://127.0.0.1:8787/ask?q=What%20is%20the%20capital%20of%20Sweden%3F
