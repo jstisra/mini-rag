@@ -1,97 +1,100 @@
-# Mini-RAG (Cloudflare Edge)
+# Mini RAG App (Cloudflare Workers)
 
-Small Retrieval-Augmented Generation app at the edge:
-- Router: Hono (Cloudflare Workers)
-- Storage: D1 (SQLite serverless)
-- Vector search: Vectorize
-- Models: Workers AI (embeddings + chat)
-- Static UI: served from `/public`
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](#)
+[![Hono](https://img.shields.io/badge/Router-Hono-111)](#)
+[![D1](https://img.shields.io/badge/DB-D1%20(SQLite)-0ea5e9)](#)
+[![Vectorize](https://img.shields.io/badge/Vector%20DB-Vectorize-8b5cf6)](#)
+[![Workers AI](https://img.shields.io/badge/LLM-Workers%20AI-f97316)](#)
+[![License](https://img.shields.io/badge/License-MIT-14b8a6)](#)
 
-> The local/Ollama version lives in branch `local-xenova`.
+Minimal Retrieval-Augmented Generation app at the **edge**.  
+Ingest → embed → store → retrieve → answer with citations.  
+Static UI in `/public`.
+
+> Local/Ollama version is in branch **`local-xenova`**.
+
+## Stack 
+- **Runtime / Router:** Cloudflare Workers + Hono  
+- **Storage:** D1 (serverless SQLite) for chunks/metadata  
+- **Vector search:** Vectorize  
+- **Models:** Workers AI (embeddings + chat)  
+- **Static assets:** served via `assets` in `wrangler.toml`
+
+--
+
+![Screenshot](public/screenshot.png)
 
 ---
 
-## Quick start
+## Run (Local Dev)
 
-**Prereqs**
-- Node 18+
-- Cloudflare account + Wrangler CLI (`npx wrangler login`)
-
-**Install**
 ```bash
-npm i
+npm install
+npx wrangler login
+npm run dev
+# open http://127.0.0.1:8787
 
+## Features
 
+Paste text or Import .txt → chunk → embed → store
 
-Provision (one-time)
+Ask questions → top chunks + citation-style answers
 
-# D1 (copy the printed database_id into wrangler.toml)
+Export / Clear memory
+
+Cloudflare-native stack (no local Ollama needed)
+--
+
+## Project structure
+Local-old-vers
+├─ public/ # Static UI (index.html, style.css, favicon)
+├─ src/
+│ ├─ embeddings.js # Local multilingual embeddings (Xenova MiniLM) – singleton, mean-pool
+│ ├─ retrieval.js # Chunking + cosine similarity + top-K retrieval
+│ ├─ store.js # In-memory store + JSON persistence (data/memory.json)
+│ └─ app.js # Express routes (ingest, ask, list, clear, export, ping)
+├─ server.js # Entry point: builds app + starts server
+├─ data/ # Persisted memory (ignored in git, keep .gitkeep)
+└─ uploads/ # File uploads (currently unused, ignored in git)
+
+cloud-new-ver
+public/         # Static UI (index.html, style.css, screenshot.png)
+src/
+ ├─ app.js      # Hono routes (Worker entrypoint)
+ ├─ embeddings.js  # Workers AI (embed + chat)
+ ├─ retrieval.js   # Chunking + Vectorize retrieval
+ └─ store.js       # D1 helpers (insert/get/delete)
+
+wrangler.toml   # Bindings (AI, D1, Vectorize, assets)
+
+### How it works OLD-vers
+1. **Ingest**: splits input into overlapping chunks → local **embeddings** via Xenova → stored with vectors.
+2. **Ask**: embeds the query → **cosine similarity** over stored vectors → returns top-K chunks → optional LLM (Ollama/OpenAI) formats an answer with citations.
+3. **Persistence**: chunks saved to `data/memory.json`. Export/Import supported.
+
+### How it works NEW-vers
+1. **Ingest**: split text → embed via Workers AI → save in D1 + Vectorize.
+2. **Ask**: query embedding → cosine similarity in Vectorize → fetch top-K from D1 → AI formats answer with citations.
+3. **Persistence**: all chunks survive restarts (D1).
+
+### Roadmap
+- PDF ingestion (pdf.js server-side)
+
+## Deploy to Cloudflare
+# One-time: create database + vector index
 npx wrangler d1 create mini_rag_db
-
-# Vector index (768 dims, cosine)
 npx wrangler vectorize create mini_rag_vectors --dimensions=768 --metric=cosine
 
-# Table
+# Run migrations (table for chunks)
 npx wrangler d1 execute mini_rag_db --remote --command "CREATE TABLE IF NOT EXISTS chunks (id INTEGER PRIMARY KEY, text TEXT NOT NULL, meta TEXT);"
 
-
-Dev
-
-npm run dev
-# http://127.0.0.1:8787
-
-
-Deploy
-
+# Deploy
 npm run deploy
-# -> https://mini-rag-edge.<your-subdomain>.workers.dev
+# → https://mini-rag-edge.<your-subdomain>.workers.dev
 
 
-API
-POST /ingest
+## Branches
 
-Body:
+cloudflare — this edge deployment (Workers AI + D1 + Vectorize)
 
-{ "text": "Stockholm is the capital of Sweden.", "meta": { "source": "demo" } }
-
-
-Response:
-
-{ "ok": true, "chunksAdded": 1 }
-
-GET /ask?q=...&k=4
-
-Response:
-
-{
-  "ok": true,
-  "query": "What is the capital of Sweden?",
-  "topK": 4,
-  "chunks": [
-    { "ref": "#1", "score": 0.9056, "text": "Stockholm is the capital of Sweden." }
-  ],
-  "answer": "According to the context, the capital of Sweden is Stockholm.",
-  "citations": [
-    { "id": 1, "meta": { "source": "demo" } }
-  ]
-}
-
-DELETE /delete/:id
-
-204 No Content
-
-GET /ping
-
-Health check.
-
-
-
-Structure
-public/           # static UI (index.html, style.css)
-src/
-  app.js          # Hono routes (ingest, ask, delete, ping) – Worker entry
-  embeddings.js   # Workers AI (embed + chat)
-  retrieval.js    # chunking + Vectorize top-K
-  store.js        # D1 helpers (insert/get/delete)
-wrangler.toml     # bindings (AI, D1, Vectorize) + assets
-package.json      # dev/deploy scripts
+local-xenova — local version with Express + Xenova embeddings + memory.json
