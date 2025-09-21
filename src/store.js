@@ -2,14 +2,10 @@
  * store.js
  *
  * Dual-mode storage layer:
- *  - LOCAL (Node): keep your existing memory.json flow for dev.
+ *  - LOCAL (Node): keep the existing memory.json flow for dev.
  *  - CLOUD (Workers): use Cloudflare D1 (serverless SQLite) – no filesystem.
- *
- * Why:
- *  - You can keep hacking locally without breaking anything.
- *  - When deployed to Cloudflare, use the D1 helpers exported below.
- *
- * Exports you already had (LOCAL):
+ * 
+ * Exports (LOCAL):
  *  - loadMemory(), saveMemory(), listMemory(), size(), clearMemory(),
  *    importMemory(), addTextChunks(chunks, embedFunc), rawMemory()
  *
@@ -17,10 +13,6 @@
  *  - insertChunk(env, { text, meta })
  *  - getChunkById(env, id)
  *  - deleteChunk(env, id)
- *
- * Tip:
- *  - In your Worker routes, call the CLOUD functions.
- *  - Local fallback functions are here for dev or legacy flows.
  */
 
 // --------- ENV DETECTION ----------
@@ -104,49 +96,68 @@ export async function addTextChunks(chunks, embedFunc, env) {
   return { added: chunks.length, total: MEMORY.length };
 }
 
+
+
 // Expose raw memory for your old cosine fallback
 export function rawMemory() {
   return MEMORY;
 }
 
-// ---------- CLOUD FUNCTIONS (D1 on Cloudflare Workers) ----------
+// --- D1 helpers (Cloudflare workers) ---
 
 /**
- * Insert a chunk into D1. meta is stored as JSON string.
- * @param {any} env - Cloudflare env (must have DB binding)
- * @param {{text:string, meta?:any}} param1
- * @returns {Promise<{id:number, text:string, meta:string}>}
+ * Insert a chunk if it's new (by content hash). If duplicate, return existing row.
+ * @returns {Promise<{ id:number, text:string, meta:string, inserted:boolean }>}
  */
-export async function insertChunk(env, { text, meta }) {
-  if (!env?.DB) throw new Error("D1 binding missing (env.DB). Check wrangler.toml.");
-  const { results } = await env.DB
-    .prepare("INSERT INTO chunks (text, meta) VALUES (?, ?) RETURNING id, text, meta")
-    .bind(text, JSON.stringify(meta || {}))
-    .run();
-  return results?.[0];
+// Compute SHA-256 hex (already in your file)
+async function sha256Hex(s) {
+  const enc = new TextEncoder();
+  const buf = await crypto.subtle.digest('SHA-256', enc.encode(s));
+  const arr = Array.from(new Uint8Array(buf));
+  return arr.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**
- * Retrieve a chunk by id from D1.
- * @param {any} env
- * @param {number} id
- * @returns {Promise<{id:number, text:string, meta:string}|null>}
+ * Insert a chunk if it's new (by content hash). If duplicate, return existing row with inserted=false.
  */
+export async function insertChunk(env, { text, meta }) {
+  if (!env?.DB) throw new Error('D1 binding missing (env.DB)');
+  const hash = await sha256Hex(text);
+
+  // 1) check if exists
+  let row;
+  {
+    const sel = await env.DB
+      .prepare('SELECT id, text, meta, hash FROM chunks WHERE hash = ?')
+      .bind(hash)
+      .run();
+    row = sel?.results?.[0] || null;
+  }
+  if (row) {
+    return { id: row.id, text: row.text, meta: row.meta, inserted: false };
+  }
+
+  // 2) insert
+  const ins = await env.DB
+    .prepare('INSERT INTO chunks (text, meta, hash) VALUES (?, ?, ?) RETURNING id, text, meta, hash')
+    .bind(text, JSON.stringify(meta ?? {}), hash)
+    .run();
+  const newRow = ins?.results?.[0];
+  if (!newRow) throw new Error('Insert failed');
+  return { id: newRow.id, text: newRow.text, meta: newRow.meta, inserted: true };
+}
+
+
 export async function getChunkById(env, id) {
-  if (!env?.DB) throw new Error("D1 binding missing (env.DB). Check wrangler.toml.");
+  if (!env?.DB) throw new Error('D1 binding missing (env.DB)');
   const { results } = await env.DB
-    .prepare("SELECT id, text, meta FROM chunks WHERE id = ?")
+    .prepare('SELECT id, text, meta FROM chunks WHERE id = ?')
     .bind(id)
     .run();
   return results?.[0] || null;
 }
 
-/**
- * Delete a chunk by id from D1.
- * @param {any} env
- * @param {number} id
- */
 export async function deleteChunk(env, id) {
-  if (!env?.DB) throw new Error("D1 binding missing (env.DB). Check wrangler.toml.");
-  await env.DB.prepare("DELETE FROM chunks WHERE id = ?").bind(id).run();
+  if (!env?.DB) throw new Error('D1 binding missing (env.DB)');
+  await env.DB.prepare('DELETE FROM chunks WHERE id = ?').bind(id).run();
 }

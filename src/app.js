@@ -1,123 +1,131 @@
-/**
- * app.js — Cloudflare Workers (Hono) version
- *
- * What it does:
- *   - Exposes the same API shape you had: /ping, /ingest, /ask, /delete/:id
- *   - Uses Cloudflare bindings:
- *       - env.DB (D1) for storing text chunks + metadata
- *       - env.VECTOR_INDEX (Vectorize) for embeddings search
- *       - env.AI (Workers AI) for embeddings + chat/answer
- *
- * Why Hono (not Express):
- *   - Express doesn't run on Workers; Hono is a tiny router designed for Workers.
- *
- * Notes:
- *   - This file is the Worker entry (set main="src/app.js" in wrangler.toml).
- *   - Your old Node server (server.js) is for the local-xenova branch only.
- */
-
 import { Hono } from 'hono';
-import { chunkText, topKByVectorize } from './retrieval.js';
-import { insertChunk, deleteChunk } from './store.js';
+import { topKByVectorize } from './retrieval.js';
+import { insertChunk, deleteChunk, getChunkById } from './store.js';
 import { embed } from './embeddings.js';
 
-// --- Models (easy to swap later) ---
-const EMBEDDING_MODEL = '@cf/baai/bge-base-en-v1.5';
 const CHAT_MODEL = '@cf/meta/llama-3-8b-instruct';
 
-// Small helper: call Workers AI chat with context grounding
+// --- utils ---
+function chunkText(text, chunkSize = 800, overlap = 120) {
+  const chunks = [];
+  let i = 0;
+  while (i < text.length) {
+    const end = Math.min(i + chunkSize, text.length);
+    const slice = text.slice(i, end).trim();
+    if (slice) chunks.push(slice);
+    if (end === text.length) break;
+    i = Math.max(0, end - overlap);
+  }
+  return chunks;
+}
+
 async function answerWithWorkersAI(env, question, context) {
   const messages = [
-    // Keep context separate and instruct the model to only use it
-    ...(context ? [{ role: 'system', content: `Context:\n${context}` }] : []),
-    { role: 'system', content: 'Use ONLY the provided context. If missing, say you do not know. Answer concisely.' },
+    { role: 'system', content: [
+        'You are a STRICT retrieval assistant.',
+        'Use ONLY the provided context between <context> ... </context>.',
+        'If the answer is not clearly contained in the context, reply EXACTLY: "I don\'t know."',
+        'Do NOT add external facts or world knowledge.',
+        'Keep answers short.'
+      ].join(' ')
+    },
+    ...(context ? [{ role: 'system', content: `<context>\n${context}\n</context>` }] : []),
     { role: 'user', content: question }
   ];
 
-  const { response } = await env.AI.run(CHAT_MODEL, { messages });
-  return response;
+  try {
+    const resp = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
+      messages,
+      temperature: 0,
+      max_tokens: 256
+    });
+    let s = typeof resp?.response === 'string' ? resp.response : '';
+    // strip angle/quotes + trim
+    s = s.replace(/^[\s<"]+|[\s>"]+$/g, '').trim();
+    return s;
+  } catch {
+    return '';
+  }
 }
+
+
 
 const app = new Hono();
 
-// -------- Health --------
+// health
 app.get('/ping', (c) => c.json({ ok: true }));
 
-// -------- Ingest text --------
-// Body: { text: string, meta?: any }
-// 1) Split into chunks
-// 2) Store each chunk in D1 (insertChunk) to get an id
-// 3) Embed the chunk via Workers AI
-// 4) Upsert vector into Vectorize with the same id
+// ingest
 app.post('/ingest', async (c) => {
   try {
-    const { text, meta } = await c.req.json();
-    const clean = (text || '').trim();
-    if (!clean) return c.json({ error: 'Missing "text" in body' }, 400);
+    const body = await c.req.json();
+    const clean = (body?.text || '').trim();
+    const meta = body?.meta ?? null;
+    if (!clean) return c.json({ ok: false, error: 'Missing "text" in body' }, 400);
 
-    // 1) Split
-    const chunks = chunkText(clean, 800, 120);
-
+    const parts = chunkText(clean, 800, 120);
     let added = 0;
-    for (const chunk of chunks) {
-      // 2) D1 insert
-      const row = await insertChunk(c.env, { text: chunk, meta });
 
-      // 3) Workers AI embedding
-      const vec = await embed(chunk, c.env); // uses EMBEDDING_MODEL under the hood
-
-      // 4) Upsert to Vectorize
-      await c.env.VECTOR_INDEX.upsert([{ id: String(row.id), values: vec }]);
-      added++;
+    //only embed+upsert when inserted is true. Only then -> increment added
+    for (const part of parts) {
+      const row = await insertChunk(c.env, { text: part, meta });
+      if (row.inserted) {                       // <— gate on new row only
+        const vec = await embed(part, c.env);
+        await c.env.VECTOR_INDEX.upsert([{ id: String(row.id), values: vec }]);
+        added++;
+      }
     }
 
-    return c.json({ ok: true, chunksAdded: added });
+    const { results } = await c.env.DB
+      .prepare('SELECT COUNT(*) AS n FROM chunks')
+      .run();
+    const total = Number(results?.[0]?.n ?? 0);
+
+    return c.json({ ok: true, chunksAdded: added, total, totalChunks: total });
   } catch (e) {
-    console.error(e);
-    return c.json({ error: String(e?.message || e) }, 500);
+    console.error('INGEST error:', e);
+    return c.json({ ok: false, error: String(e?.message || e) }, 500);
   }
 });
 
-// -------- Ask / Query --------
-// Query params: ?q=...&k=4
-// 1) Vectorize search to get topK ids
-// 2) Build a context string from the matched chunks
-// 3) Call Workers AI chat to get an answer grounded in that context
+// ask
 app.get('/ask', async (c) => {
   try {
     const q = (c.req.query('q') || '').toString().trim();
     const k = Math.max(1, Math.min(8, parseInt(c.req.query('k')) || 4));
-    if (!q) return c.json({ error: 'Missing query ?q=' }, 400);
+    if (!q) return c.json({ ok: false, error: 'Missing query ?q=' }, 400);
 
-    const top = await topKByVectorize(c.env, q, k); // [{ref,score,id,text,meta},...]
+    const top = await topKByVectorize(c.env, q, k);
     const context = top.map(item => `[${item.ref}] ${item.text}`).join('\n\n');
 
-    // If nothing found, still return a friendly answer
-    let answer;
+    let answer = '';
     if (top.length === 0) {
       answer = "I don't know. (No relevant context was found.)";
     } else {
       answer = await answerWithWorkersAI(c.env, q, context);
+      // if blank or says I don't know, give a grounded snippet
+      if (!answer || /i don't know/i.test(answer)) {
+        const snippet = top[0].text.slice(0, 160).replace(/\s+/g, ' ').trim();
+        answer = `Based on the context: ${snippet}`;
+      }
     }
 
-    // Keep response shape similar to your old one
+
     return c.json({
       ok: true,
       query: q,
       topK: k,
       chunks: top.map(({ ref, score, text }) => ({ ref, score, text })),
       answer,
-      // Expose IDs + meta separately if a UI needs citations
       citations: top.map(({ id, meta }) => ({ id, meta }))
     });
   } catch (e) {
-    console.error(e);
-    return c.json({ error: String(e?.message || e) }, 500);
+    console.error('ASK error:', e);
+    return c.json({ ok: false, error: String(e?.message || e) }, 500);
   }
 });
 
-// -------- Delete by id --------
-// Removes the row from D1 and the vector from Vectorize
+// delete one
 app.delete('/delete/:id', async (c) => {
   try {
     const id = Number(c.req.param('id'));
@@ -126,23 +134,80 @@ app.delete('/delete/:id', async (c) => {
     await c.env.VECTOR_INDEX.deleteByIds([String(id)]);
     return c.body(null, 204);
   } catch (e) {
-    console.error(e);
-    return c.json({ error: String(e?.message || e) }, 500);
+    console.error('DELETE error:', e);
+    return c.json({ ok: false, error: String(e?.message || e) }, 500);
   }
 });
 
+// list (UI expects preview + idx)
+app.get('/list', async (c) => {
+  const { results } = await c.env.DB
+    .prepare('SELECT id, text, meta FROM chunks ORDER BY id DESC LIMIT 200')
+    .run();
 
-// simple home route so / doesn't 404
-/**
-app.get('/', (c) => {
-  return c.text(
-    'Mini-RAG Edge is running.\n' +
-    'Try:\n' +
-    'GET  /ping\n' +
-    'POST /ingest  {"text":"..."}\n' +
-    'GET  /ask?q=your+question\n'
-  );
-});*/
+  const items = results.map((r, idx) => {
+    const preview = r.text.length > 200 ? r.text.slice(0, 200) + '…' : r.text;
+    return {
+      id: r.id,
+      idx,                // old UI may show this
+      preview,            // old UI calls .replace(...) on this
+      text: r.text,       // keep full text too
+      meta: r.meta ? JSON.parse(r.meta) : null
+    };
+  });
+
+  return c.json({ items, total: items.length });
+});
+
+
+// clear all (return 204 as old UI did)
+app.post('/clear', async (c) => {
+  try {
+    const { results } = await c.env.DB.prepare('SELECT id FROM chunks').run();
+    const ids = results.map(r => String(r.id));
+    const BATCH = 256;
+    for (let i = 0; i < ids.length; i += BATCH) {
+      const batch = ids.slice(i, i + BATCH);
+      if (batch.length) await c.env.VECTOR_INDEX.deleteByIds(batch);
+    }
+    await c.env.DB.prepare('DELETE FROM chunks').run();
+    return c.body(null, 204);
+  } catch (e) {
+    console.error('CLEAR error:', e);
+    return c.json({ ok: false, error: String(e?.message || e) }, 500);
+  }
+});
+
+// export (download)
+app.get('/export', async (c) => {
+  const { results } = await c.env.DB
+    .prepare('SELECT id, text, meta FROM chunks ORDER BY id')
+    .run();
+  const payload = {
+    items: results.map(r => ({
+      id: r.id,
+      text: r.text,
+      meta: r.meta ? JSON.parse(r.meta) : null
+    }))
+  };
+  c.header('content-type', 'application/json');
+  c.header('content-disposition', 'attachment; filename="memory-export.json"');
+  return c.body(JSON.stringify(payload, null, 2));
+});
+
+// minimal root
+app.get('/', (c) => c.text('OK'));
+
+
+// debug: show raw Vectorize matches for a question (no hydration)
+app.get('/debug/vec', async (c) => {
+  const q = (c.req.query('q') || '').toString().trim();
+  if (!q) return c.json({ error: 'Missing ?q=' }, 400);
+  const out = await c.env.AI.run('@cf/baai/bge-base-en-v1.5', { text: q });
+  const qVec = out?.data?.[0] || [];
+  const res = await c.env.VECTOR_INDEX.query(qVec, { topK: 5 });
+  return c.json({ topK: 5, matches: res?.matches || [] });
+});
 
 
 export default app;
